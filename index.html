@@ -35,7 +35,7 @@ button,input,select,textarea{font:inherit} button{cursor:pointer;border:0}.top{p
 </main>
 <div id="authModal" class="modal hidden"></div>
 <nav class="bottom"><button class="nav active" data-view="workout">Workout</button><button class="nav" data-view="dashboard">Progress</button><button class="nav" data-view="history">History</button><button class="nav" data-view="program">Program</button></nav>
-<script src="config.js"></script><script>
+<script>window.WORKOUT_CONFIG = window.WORKOUT_CONFIG || {}; </script><script>
 const PROGRAM = [
  {key:'Squat',name:'Squat',mode:'5/3/1',fiveThreeOne:{trainingMax:0,cycle:1,week:1,rounding:5,tmIncrease:10,mainLiftId:'Squat-2'},exercises:[
   ['Foam Rolling W/U','','','',0],['Lateral jumps x10 per side','2','plyo warmup','',0],['A1 Barbell Squat','','','',0],['B1 Barbell Squat AMRAP','1','AMRAP','',0],['C1 Romanian DLs','3','','',0],['C2 Single Leg Squat','','6-8 e/s','BW',0],['C2 Side Plank w/Banded Clamshell','2','','BW',0],['Core of choice','3','10-20','',0]
@@ -106,7 +106,8 @@ async function putSession(s){await putLocalSession(s);if(cloudReady&&currentUser
 async function loadCloudState(){if(!cloudReady||!currentUser)return;cloudSyncing=true;try{const [{data:remoteSessions,error:sesErr},{data:remoteProgram,error:progErr}]=await Promise.all([supabase.from('workout_sessions').select('id,session_date,routine,payload,updated_at').order('session_date',{ascending:true}),supabase.from('workout_programs').select('program,updated_at').maybeSingle()]);if(sesErr)throw sesErr;if(progErr)throw progErr;const local=await getLocalSessions();const map=new Map(local.map(x=>[x.id,x]));for(const x of remoteSessions||[]){const r=x.payload||{id:x.id,date:x.session_date,routine:x.routine};if(!map.has(r.id))map.set(r.id,r)}const merged=[...map.values()].sort((a,b)=>new Date(a.date)-new Date(b.date));if(storageFallback||!db)setFallbackSessions(merged);else for(const row of merged)await putLocalSession(row);const localProgram=(()=>{try{return JSON.parse(localStorage.getItem('wt-program')||'null')}catch(e){return null}})();const localProgramUpdated=localStorage.getItem('wt-program-updated')||'';const remoteProgramUpdated=remoteProgram?.updated_at||'';if(remoteProgram?.program&&(!localProgram||!localProgramUpdated||remoteProgramUpdated>localProgramUpdated)){state.program=normalizeProgram(remoteProgram.program);localStorage.setItem('wt-program',JSON.stringify(state.program));localStorage.setItem('wt-program-updated',remoteProgramUpdated||new Date().toISOString())}else{await supabase.from('workout_programs').upsert({user_id:currentUser.id,program:state.program,updated_at:localProgramUpdated||new Date().toISOString()})}for(const row of merged)await supabase.from('workout_sessions').upsert({id:row.id,user_id:currentUser.id,session_date:row.date,routine:row.routine,payload:row,updated_at:new Date().toISOString()})}catch(e){console.warn('Cloud load/sync failed',e);notify('Cloud sync failed. Your local data is still safe.','warn')}finally{cloudSyncing=false;updateAuthUI();await renderAll()}}
 async function syncProgramToCloud(){localStorage.setItem('wt-program',JSON.stringify(state.program));if(!cloudReady||!currentUser)return;const {error}=await supabase.from('workout_programs').upsert({user_id:currentUser.id,program:state.program,updated_at:new Date().toISOString()});if(error){console.warn('Program sync failed',error);notify('Program saved locally, but cloud sync failed.','warn')}}
 function notify(msg,type='ok'){const n=document.createElement('div');n.className=`statusbar ${type}`;n.textContent=msg;document.querySelector('.container').prepend(n);setTimeout(()=>n.remove(),3500)}
-async function openAuth(){if(!cloudReady){alert('Cloud sync is not connected. Make sure config.js is in the same folder as index.html and contains your Supabase URL and publishable key.');return}const m=el('authModal');m.classList.remove('hidden');m.innerHTML=`<div class="modal-card"><div class="row between"><div><div class="h2">Cloud Sync</div><div class="muted">Sign in to sync your workouts across devices.</div></div><button class="iconbtn" id="closeAuth">✕</button></div><div class="auth-grid" style="margin-top:14px"><input class="input" id="authEmail" type="email" placeholder="Email"><input class="input" id="authPassword" type="password" placeholder="Password"><div class="row"><button class="btn primary" id="signInBtn">Sign in</button><button class="btn" id="signUpBtn">Create account</button></div><div class="tiny muted">Your workout data is protected by Supabase Row Level Security.</div></div></div>`;el('closeAuth').onclick=()=>m.classList.add('hidden');el('signInBtn').onclick=async()=>{const email=el('authEmail').value.trim(),password=el('authPassword').value;if(!email||!password)return alert('Enter an email and password.');const {error}=await supabase.auth.signInWithPassword({email,password});if(error)return alert(error.message);m.classList.add('hidden')};el('signUpBtn').onclick=async()=>{const email=el('authEmail').value.trim(),password=el('authPassword').value;if(!email||!password)return alert('Enter an email and password.');if(password.length<6)return alert('Use at least 6 characters for the password.');const {error}=await supabase.auth.signUp({email,password});if(error)return alert(error.message);alert('Account created. Check your email if confirmation is required, then sign in.')}}
+async function openAuth(){if(!cloudReady){const url=prompt('Enter your Supabase Project URL'); if(!url)return; const key=prompt('Enter your Supabase publishable key'); if(!key)return; try{localStorage.setItem('wt-cloud-config',JSON.stringify({supabaseUrl:url.trim(),supabaseKey:key.trim()})); location.reload(); }catch(e){alert('Could not save cloud settings on this device.')}}
+if(!cloudReady)returnconst m=el('authModal');m.classList.remove('hidden');m.innerHTML=`<div class="modal-card"><div class="row between"><div><div class="h2">Cloud Sync</div><div class="muted">Sign in to sync your workouts across devices.</div></div><button class="iconbtn" id="closeAuth">✕</button></div><div class="auth-grid" style="margin-top:14px"><input class="input" id="authEmail" type="email" placeholder="Email"><input class="input" id="authPassword" type="password" placeholder="Password"><div class="row"><button class="btn primary" id="signInBtn">Sign in</button><button class="btn" id="signUpBtn">Create account</button></div><div class="tiny muted">Your workout data is protected by Supabase Row Level Security.</div></div></div>`;el('closeAuth').onclick=()=>m.classList.add('hidden');el('signInBtn').onclick=async()=>{const email=el('authEmail').value.trim(),password=el('authPassword').value;if(!email||!password)return alert('Enter an email and password.');const {error}=await supabase.auth.signInWithPassword({email,password});if(error)return alert(error.message);m.classList.add('hidden')};el('signUpBtn').onclick=async()=>{const email=el('authEmail').value.trim(),password=el('authPassword').value;if(!email||!password)return alert('Enter an email and password.');if(password.length<6)return alert('Use at least 6 characters for the password.');const {error}=await supabase.auth.signUp({email,password});if(error)return alert(error.message);alert('Account created. Check your email if confirmation is required, then sign in.')}}
 async function signOut(){if(cloudReady){await supabase.auth.signOut();currentUser=null;updateAuthUI();await renderAll()}}
 function updateAuthUI(){const b=el('settingsBtn');if(!b)return;b.title=currentUser?`Signed in as ${currentUser.email}`:'Cloud Sync';b.textContent=currentUser?'☁️':'⚙️'}
 async function initCloud(){if(!cloudReady)return;const {data}=await supabase.auth.getSession();currentUser=data?.session?.user||null;updateAuthUI();supabase.auth.onAuthStateChange(async(_event,session)=>{currentUser=session?.user||null;updateAuthUI();if(currentUser)await loadCloudState();else await renderAll()});if(currentUser)await loadCloudState()}
@@ -280,16 +281,31 @@ async function bootApp(){
     b.style.display='block';
   }
   try{
-    const cfg=window.WORKOUT_CONFIG||{};
+    let cfg=window.WORKOUT_CONFIG||{};
+    try{
+      const saved=JSON.parse(localStorage.getItem('wt-cloud-config')||'null');
+      if(saved?.supabaseUrl && saved?.supabaseKey) cfg=saved;
+    }catch(e){}
+    if(!cfg.supabaseUrl || !cfg.supabaseKey || String(cfg.supabaseUrl).includes('YOUR-PROJECT-REF') || String(cfg.supabaseKey).includes('YOUR-PUBLISHABLE-KEY')){
+      try{
+        const r=await fetch('config.js',{cache:'no-store'});
+        if(r.ok){
+          const txt=await r.text();
+          const m=txt.match(/supabaseUrl\s*:\s*['"]([^'"]+)['"][\s\S]*?supabaseKey\s*:\s*['"]([^'"]+)['"]/);
+          if(m) cfg={supabaseUrl:m[1],supabaseKey:m[2]};
+        }
+      }catch(e){}
+    }
     const configured=!!cfg.supabaseUrl && !!cfg.supabaseKey && !String(cfg.supabaseUrl).includes('YOUR-PROJECT-REF') && !String(cfg.supabaseKey).includes('YOUR-PUBLISHABLE-KEY');
     if(configured){
-      await new Promise((resolve,reject)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';s.onload=resolve;s.onerror=()=>reject(new Error('Could not load Supabase client library')) ;document.head.appendChild(s)});
+      try{localStorage.setItem('wt-cloud-config',JSON.stringify(cfg))}catch(e){}
+      await new Promise((resolve,reject)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';s.onload=resolve;s.onerror=()=>reject(new Error('Could not load Supabase client library'));document.head.appendChild(s)});
       if(!window.supabase) throw new Error('Supabase client library did not load');
       supabase=window.supabase.createClient(cfg.supabaseUrl,cfg.supabaseKey);
       cloudReady=true;
       await initCloud();
     } else {
-      console.warn('Cloud sync not configured: config.js is missing or contains placeholders.');
+      console.warn('Cloud sync not configured.');
       updateAuthUI();
     }
   }catch(e){
