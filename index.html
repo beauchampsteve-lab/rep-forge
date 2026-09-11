@@ -103,8 +103,20 @@ async function getLocalSessions(){if(storageFallback||!db)return getFallbackSess
 async function getSessions(){return getLocalSessions()}
 async function putLocalSession(s){if(storageFallback||!db){const rows=getFallbackSessions();const idx=rows.findIndex(x=>x.id===s.id);if(idx>=0)rows[idx]=s;else rows.push(s);setFallbackSessions(rows);return}return new Promise(res=>{const q=tx('readwrite').put(s);q.onsuccess=()=>res();q.onerror=()=>{storageFallback=true;const rows=getFallbackSessions();const idx=rows.findIndex(x=>x.id===s.id);if(idx>=0)rows[idx]=s;else rows.push(s);setFallbackSessions(rows);res()}})}
 async function putSession(s){await putLocalSession(s);if(cloudReady&&currentUser&&!cloudSyncing){const {error}=await supabase.from('workout_sessions').upsert({id:s.id,user_id:currentUser.id,session_date:s.date,routine:s.routine,payload:s,updated_at:new Date().toISOString()});if(error)console.warn('Cloud session sync failed',error)}}
-async function loadCloudState(){if(!cloudReady||!currentUser)return;cloudSyncing=true;try{const [{data:remoteSessions,error:sesErr},{data:remoteProgram,error:progErr}]=await Promise.all([supabase.from('workout_sessions').select('id,session_date,routine,payload,updated_at').order('session_date',{ascending:true}),supabase.from('workout_programs').select('program,updated_at').maybeSingle()]);if(sesErr)throw sesErr;if(progErr)throw progErr;const local=await getLocalSessions();const map=new Map(local.map(x=>[x.id,x]));for(const x of remoteSessions||[]){const r=x.payload||{id:x.id,date:x.session_date,routine:x.routine};if(!map.has(r.id))map.set(r.id,r)}const merged=[...map.values()].sort((a,b)=>new Date(a.date)-new Date(b.date));if(storageFallback||!db)setFallbackSessions(merged);else for(const row of merged)await putLocalSession(row);const localProgram=(()=>{try{return JSON.parse(localStorage.getItem('wt-program')||'null')}catch(e){return null}})();const localProgramUpdated=localStorage.getItem('wt-program-updated')||'';const remoteProgramUpdated=remoteProgram?.updated_at||'';if(remoteProgram?.program&&(!localProgram||!localProgramUpdated||remoteProgramUpdated>localProgramUpdated)){state.program=normalizeProgram(remoteProgram.program);localStorage.setItem('wt-program',JSON.stringify(state.program));localStorage.setItem('wt-program-updated',remoteProgramUpdated||new Date().toISOString())}else{await supabase.from('workout_programs').upsert({user_id:currentUser.id,program:state.program,updated_at:localProgramUpdated||new Date().toISOString()})}for(const row of merged)await supabase.from('workout_sessions').upsert({id:row.id,user_id:currentUser.id,session_date:row.date,routine:row.routine,payload:row,updated_at:new Date().toISOString()})}catch(e){console.warn('Cloud load/sync failed',e);notify('Cloud sync failed. Your local data is still safe.','warn')}finally{cloudSyncing=false;updateAuthUI();await renderAll()}}
-async function syncProgramToCloud(){localStorage.setItem('wt-program',JSON.stringify(state.program));if(!cloudReady||!currentUser)return;const {error}=await supabase.from('workout_programs').upsert({user_id:currentUser.id,program:state.program,updated_at:new Date().toISOString()});if(error){console.warn('Program sync failed',error);notify('Program saved locally, but cloud sync failed.','warn')}}
+async function loadCloudState(){if(!cloudReady||!currentUser)return;cloudSyncing=true;try{const [{data:remoteSessions,error:sesErr},{data:remoteProgram,error:progErr}]=await Promise.all([supabase.from('workout_sessions').select('id,session_date,routine,payload,updated_at').order('session_date',{ascending:true}),supabase.from('workout_programs').select('program,updated_at').maybeSingle()]);if(sesErr)throw sesErr;if(progErr)throw progErr;const local=await getLocalSessions();const map=new Map(local.map(x=>[x.id,x]));for(const x of remoteSessions||[]){const r=x.payload||{id:x.id,date:x.session_date,routine:x.routine};if(!map.has(r.id))map.set(r.id,r)}const merged=[...map.values()].sort((a,b)=>new Date(a.date)-new Date(b.date));if(storageFallback||!db)setFallbackSessions(merged);else for(const row of merged)await putLocalSession(row);const localProgram=(()=>{try{return JSON.parse(localStorage.getItem('wt-program')||'null')}catch(e){return null}})();const localProgramUpdated=localStorage.getItem('wt-program-updated')||'';const remoteProgramUpdated=remoteProgram?.updated_at||'';if(remoteProgram?.program&&(!localProgram||!localProgramUpdated||remoteProgramUpdated>localProgramUpdated)){state.program=normalizeProgram(remoteProgram.program);localStorage.setItem('wt-program',JSON.stringify(state.program));localStorage.setItem('wt-program-updated',remoteProgramUpdated||new Date().toISOString())}else if(localProgram){const ts=localProgramUpdated||new Date().toISOString();await supabase.from('workout_programs').upsert({user_id:currentUser.id,program:state.program,updated_at:ts})}for(const row of merged)await supabase.from('workout_sessions').upsert({id:row.id,user_id:currentUser.id,session_date:row.date,routine:row.routine,payload:row,updated_at:new Date().toISOString()})}catch(e){console.warn('Cloud load/sync failed',e);notify('Cloud sync failed. Your local data is still safe.','warn')}finally{cloudSyncing=false;updateAuthUI();await renderAll()}}
+async function syncProgramToCloud(){
+  const updatedAt=new Date().toISOString();
+  localStorage.setItem('wt-program',JSON.stringify(state.program));
+  localStorage.setItem('wt-program-updated',updatedAt);
+  if(!cloudReady||!currentUser)return {ok:false,localOnly:true};
+  const {error}=await supabase.from('workout_programs').upsert({user_id:currentUser.id,program:state.program,updated_at:updatedAt});
+  if(error){
+    console.warn('Program sync failed',error);
+    notify('Program saved locally. Cloud save failed.','warn');
+    return {ok:false,localOnly:true,error};
+  }
+  return {ok:true};
+}
 function notify(msg,type='ok'){const n=document.createElement('div');n.className=`statusbar ${type}`;n.textContent=msg;document.querySelector('.container').prepend(n);setTimeout(()=>n.remove(),3500)}
 async function openAuth(){
   if(!cloudReady){
@@ -258,16 +270,23 @@ function bindProgram(){
           ex.target=document.querySelector(`[data-ptarget="${key}"]`)?.value.trim()||'';
         });
       }
-      saveProgramLocal();
+      const updatedAt=new Date().toISOString();
+      localStorage.setItem('wt-program',JSON.stringify(state.program));
+      localStorage.setItem('wt-program-updated',updatedAt);
       state.draft={};
       saveDraft();
-      await renderAll();
-      notify('Program saved locally.','ok');
+      let cloudSaved=false;
       if(cloudReady&&currentUser){
-        const {error}=await supabase.from('workout_programs').upsert({user_id:currentUser.id,program:state.program,updated_at:new Date().toISOString()});
-        if(error){console.warn('Program cloud save failed',error);notify('Program saved locally. Cloud save failed.','warn');}
-        else notify('Program saved and synced.','ok');
+        const {error}=await supabase.from('workout_programs').upsert({user_id:currentUser.id,program:state.program,updated_at:updatedAt});
+        if(error){
+          console.warn('Program cloud save failed',error);
+          notify('Program saved on this device. Cloud save failed.','warn');
+        } else {
+          cloudSaved=true;
+        }
       }
+      await renderAll();
+      notify(cloudSaved?'Program saved and synced.':'Program saved on this device.','ok');
     }catch(err){
       console.error('Program save failed',err);
       notify('Program could not be saved: '+(err?.message||String(err)),'warn');
