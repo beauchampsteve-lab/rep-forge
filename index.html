@@ -85,7 +85,7 @@ function normalizeProgram(program){
     return n;
   });
 }
-function parseWeights(v){if(Array.isArray(v))return v.map(Number).filter(n=>!Number.isNaN(n));return String(v??'').split(',').map(x=>Number(x.trim())).filter(n=>!Number.isNaN(n)&&xNotBlank(x));}
+function parseWeights(v){if(Array.isArray(v))return v.map(Number).filter(n=>!Number.isNaN(n));return String(v??'').split(',').map(x=>x.trim()).filter(Boolean).map(Number).filter(n=>!Number.isNaN(n));}
 function xNotBlank(x){return String(x).trim()!=='';}
 function stepCount(ex){const m=String(ex.sets||'').match(/\d+/);return Math.max(Number(m?.[0])||0,ex.targetWeights?.length||0,3);}
 const storedProgram=(()=>{try{return JSON.parse(localStorage.getItem('wt-program')||'null')}catch(e){return null}})();
@@ -150,7 +150,25 @@ async function openAuth(){
       const cfg={supabaseUrl:url.trim(),supabaseKey:key.trim()};
       localStorage.setItem('wt-cloud-config',JSON.stringify(cfg));
       await idbPut('kv',{key:'cloud-config',value:cfg});
-      location.reload();
+      try{
+        if(!window.supabase){
+          await new Promise((resolve,reject)=>{
+            if(document.querySelector('script[data-supabase-loader="1"]')){
+              const wait=setInterval(()=>{if(window.supabase){clearInterval(wait);resolve();}},25);
+              setTimeout(()=>{clearInterval(wait);reject(new Error('Supabase library load timed out'));},10000);
+              return;
+            }
+            const s=document.createElement('script');s.dataset.supabaseLoader='1';s.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';s.onload=resolve;s.onerror=()=>reject(new Error('Could not load Supabase client library'));document.head.appendChild(s);
+          });
+        }
+        supabase=window.supabase.createClient(cfg.supabaseUrl,cfg.supabaseKey);
+        cloudReady=true;
+        await initCloud();
+        updateAuthUI();
+        notify('Cloud sync connected.','ok');
+      }catch(e){
+        alert('Cloud settings were saved, but the Supabase library could not be connected. '+(e?.message||e));
+      }
     }catch(e){
       alert('Could not save cloud settings on this device.');
     }
@@ -353,9 +371,23 @@ async function bootApp(){
     if(configured){
       try{localStorage.setItem('wt-cloud-config',JSON.stringify(cfg))}catch(e){}
       await idbPut('kv',{key:'cloud-config',value:cfg});
-      await new Promise((resolve,reject)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';s.onload=resolve;s.onerror=()=>reject(new Error('Could not load Supabase client library'));document.head.appendChild(s)});
+      if(!window.supabase){
+        await new Promise((resolve,reject)=>{
+          if(document.querySelector('script[data-supabase-loader="1"]')){
+            const wait=setInterval(()=>{if(window.supabase){clearInterval(wait);resolve();}},25);
+            setTimeout(()=>{clearInterval(wait);reject(new Error('Could not load Supabase client library'))},10000);
+            return;
+          }
+          const s=document.createElement('script');
+          s.dataset.supabaseLoader='1';
+          s.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
+          s.onload=resolve;
+          s.onerror=()=>reject(new Error('Could not load Supabase client library'));
+          document.head.appendChild(s);
+        });
+      }
       if(!window.supabase) throw new Error('Supabase client library did not load');
-      supabase=window.supabase.createClient(cfg.supabaseUrl,cfg.supabaseKey);
+      if(!supabase) supabase=window.supabase.createClient(cfg.supabaseUrl,cfg.supabaseKey);
       cloudReady=true;
       await initCloud();
     } else {
