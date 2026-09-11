@@ -112,9 +112,76 @@ async function getSavedCloudConfig(){
   return null;
 }
 
-let db=null; let storageFallback=false; let supabase=null; let cloudReady=false; let currentUser=null; let cloudSyncing=false;
+let db=null; let storageFallback=false; let cloudConfig=null; let cloudReady=false; let currentUser=null; let cloudSession=null; let cloudSyncing=false;
 const LOCAL_SESSIONS_KEY='wt-sessions';
-if(window.WORKOUT_CONFIG && window.WORKOUT_CONFIG.supabaseUrl && !window.WORKOUT_CONFIG.supabaseUrl.includes('YOUR-PROJECT-REF') && window.supabase){try{supabase=window.supabase.createClient(window.WORKOUT_CONFIG.supabaseUrl,window.WORKOUT_CONFIG.supabaseKey);cloudReady=true}catch(e){console.warn('Supabase init failed',e)}}
+
+function normalizeCloudConfig(cfg){
+  if(!cfg) return null;
+  const supabaseUrl=String(cfg.supabaseUrl||'').trim().replace(/\/$/,'');
+  const supabaseKey=String(cfg.supabaseKey||'').trim();
+  if(!supabaseUrl || !supabaseKey) return null;
+  if(supabaseUrl.includes('YOUR-PROJECT-REF') || supabaseKey.includes('YOUR-PUBLISHABLE-KEY')) return null;
+  return {supabaseUrl,supabaseKey};
+}
+async function saveCloudConfig(cfg){
+  cloudConfig=normalizeCloudConfig(cfg);
+  if(!cloudConfig) return false;
+  try{localStorage.setItem('wt-cloud-config',JSON.stringify(cloudConfig));}catch(e){}
+  const ok=await idbPut('kv',{key:'cloud-config',value:cloudConfig});
+  return ok;
+}
+async function getSavedCloudConfig(){
+  try{const r=await idbGet('kv','cloud-config');const cfg=normalizeCloudConfig(r?.value);if(cfg)return cfg;}catch(e){}
+  try{const saved=JSON.parse(localStorage.getItem('wt-cloud-config')||'null');const cfg=normalizeCloudConfig(saved);if(cfg)return cfg;}catch(e){}
+  return null;
+}
+async function getSavedCloudSession(){
+  try{const r=await idbGet('kv','cloud-session');if(r?.value?.access_token&&r?.value?.refresh_token)return r.value;}catch(e){}
+  try{const saved=JSON.parse(localStorage.getItem('wt-cloud-session')||'null');if(saved?.access_token&&saved?.refresh_token)return saved;}catch(e){}
+  return null;
+}
+async function saveCloudSession(session){
+  cloudSession=session||null;
+  if(session){
+    try{localStorage.setItem('wt-cloud-session',JSON.stringify(session));}catch(e){}
+    await idbPut('kv',{key:'cloud-session',value:session});
+  }else{
+    try{localStorage.removeItem('wt-cloud-session');}catch(e){}
+    await idbDelete('kv','cloud-session');
+  }
+}
+function authHeaders(extra={}){return Object.assign({'apikey':cloudConfig.supabaseKey,'Content-Type':'application/json'}, extra, cloudSession?.access_token?{'Authorization':`Bearer ${cloudSession.access_token}`}:{})}
+function restUrl(path){return `${cloudConfig.supabaseUrl}/rest/v1/${path.replace(/^\//,'')}`}
+async function refreshCloudSession(force=false){
+  if(!cloudConfig||!cloudSession?.refresh_token)return false;
+  if(!force && cloudSession.expires_at && Date.now() < Number(cloudSession.expires_at)-60000) return true;
+  const res=await fetch(`${cloudConfig.supabaseUrl}/auth/v1/token?grant_type=refresh_token`,{method:'POST',headers:{'apikey':cloudConfig.supabaseKey,'Content-Type':'application/json'},body:JSON.stringify({refresh_token:cloudSession.refresh_token})});
+  const data=await res.json().catch(()=>({}));
+  if(!res.ok||!data.access_token){await saveCloudSession(null);currentUser=null;return false;}
+  await saveCloudSession({access_token:data.access_token,refresh_token:data.refresh_token||cloudSession.refresh_token,expires_at:Date.now()+Number(data.expires_in||3600)*1000,user:data.user||cloudSession.user||null});
+  currentUser=cloudSession.user||data.user||null;
+  return true;
+}
+async function apiRequest(path,options={},retry=true){
+  if(!cloudConfig) throw new Error('Cloud sync is not configured.');
+  if(cloudSession) await refreshCloudSession(false);
+  let res=await fetch(restUrl(path),{...options,headers:authHeaders(options.headers||{})});
+  if(res.status===401 && retry && cloudSession){
+    const refreshed=await refreshCloudSession(true);
+    if(refreshed) res=await fetch(restUrl(path),{...options,headers:authHeaders(options.headers||{})});
+  }
+  const text=await res.text();
+  let data=null;try{data=text?JSON.parse(text):null;}catch(e){data=text;}
+  if(!res.ok){const msg=(data&&data.message)||(data&&data.error_description)||(data&&data.error)||text||`HTTP ${res.status}`;throw new Error(msg);}
+  return data;
+}
+async function authRequest(path,body){
+  if(!cloudConfig) throw new Error('Cloud sync is not configured.');
+  const res=await fetch(`${cloudConfig.supabaseUrl}/auth/v1/${path}`,{method:'POST',headers:{'apikey':cloudConfig.supabaseKey,'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const text=await res.text();let data=null;try{data=text?JSON.parse(text):null;}catch(e){data=text;}
+  if(!res.ok){const msg=(data&&data.msg)||(data&&data.message)||(data&&data.error_description)||(data&&data.error)||text||`HTTP ${res.status}`;throw new Error(msg);}
+  return data;
+}
 function openDB(){return new Promise(res=>{try{if(!('indexedDB' in window))throw new Error('IndexedDB unavailable');const q=indexedDB.open('workout-tracker-db',2);q.onupgradeneeded=e=>{const d=e.target.result;if(!d.objectStoreNames.contains('sessions')){const ss=d.createObjectStore('sessions',{keyPath:'id'});ss.createIndex('date','date');ss.createIndex('routine','routine')}if(!d.objectStoreNames.contains('kv'))d.createObjectStore('kv',{keyPath:'key'});if(!d.objectStoreNames.contains('program'))d.createObjectStore('program',{keyPath:'key'})};q.onsuccess=e=>{db=e.target.result;storageFallback=false;res(db)};q.onerror=()=>{storageFallback=true;res(null)}}catch(e){storageFallback=true;res(null)}})}
 function idbGet(store,key){if(!db)return Promise.resolve(null);return new Promise(res=>{try{const q=db.transaction(store,'readonly').objectStore(store).get(key);q.onsuccess=()=>res(q.result||null);q.onerror=()=>res(null)}catch(e){res(null)}})}
 function idbPut(store,value){if(!db)return Promise.resolve(false);return new Promise(res=>{try{const q=db.transaction(store,'readwrite').objectStore(store).put(value);q.onsuccess=()=>res(true);q.onerror=()=>res(false)}catch(e){res(false)}})}
@@ -124,60 +191,56 @@ function getFallbackSessions(){try{return JSON.parse(localStorage.getItem(LOCAL_
 function setFallbackSessions(rows){localStorage.setItem(LOCAL_SESSIONS_KEY,JSON.stringify(rows))}
 async function getLocalSessions(){if(storageFallback||!db)return getFallbackSessions().sort((a,b)=>new Date(a.date)-new Date(b.date));return new Promise(res=>{const q=tx().getAll();q.onsuccess=()=>res(q.result.sort((a,b)=>new Date(a.date)-new Date(b.date)));q.onerror=()=>{storageFallback=true;res(getFallbackSessions())}})}
 async function getSessions(){return getLocalSessions()}
-async function putLocalSession(s){if(storageFallback||!db){const rows=getFallbackSessions();const idx=rows.findIndex(x=>x.id===s.id);if(idx>=0)rows[idx]=s;else rows.push(s);setFallbackSessions(rows);return}return new Promise(res=>{const q=tx('readwrite').put(s);q.onsuccess=()=>res();q.onerror=()=>{storageFallback=true;const rows=getFallbackSessions();const idx=rows.findIndex(x=>x.id===s.id);if(idx>=0)rows[idx]=s;else rows.push(s);setFallbackSessions(rows);res()}})}
-async function putSession(s){await putLocalSession(s);if(cloudReady&&currentUser&&!cloudSyncing){const {error}=await supabase.from('workout_sessions').upsert({id:s.id,user_id:currentUser.id,session_date:s.date,routine:s.routine,payload:s,updated_at:new Date().toISOString()});if(error)console.warn('Cloud session sync failed',error)}}
-async function loadCloudState(){if(!cloudReady||!currentUser)return;cloudSyncing=true;try{const [{data:remoteSessions,error:sesErr},{data:remoteProgram,error:progErr}]=await Promise.all([supabase.from('workout_sessions').select('id,session_date,routine,payload,updated_at').order('session_date',{ascending:true}),supabase.from('workout_programs').select('program,updated_at').maybeSingle()]);if(sesErr)throw sesErr;if(progErr)throw progErr;const local=await getLocalSessions();const map=new Map(local.map(x=>[x.id,x]));for(const x of remoteSessions||[]){const r=x.payload||{id:x.id,date:x.session_date,routine:x.routine};if(!map.has(r.id))map.set(r.id,r)}const merged=[...map.values()].sort((a,b)=>new Date(a.date)-new Date(b.date));if(storageFallback||!db)setFallbackSessions(merged);else for(const row of merged)await putLocalSession(row);const localProgram=(()=>{try{return JSON.parse(localStorage.getItem('wt-program')||'null')}catch(e){return null}})();const localProgramUpdated=localStorage.getItem('wt-program-updated')||'';const remoteProgramUpdated=remoteProgram?.updated_at||'';if(remoteProgram?.program&&(!localProgram||!localProgramUpdated||remoteProgramUpdated>localProgramUpdated)){state.program=normalizeProgram(remoteProgram.program);localStorage.setItem('wt-program',JSON.stringify(state.program));localStorage.setItem('wt-program-updated',remoteProgramUpdated||new Date().toISOString())}else if(localProgram){const ts=localProgramUpdated||new Date().toISOString();await supabase.from('workout_programs').upsert({user_id:currentUser.id,program:state.program,updated_at:ts})}for(const row of merged)await supabase.from('workout_sessions').upsert({id:row.id,user_id:currentUser.id,session_date:row.date,routine:row.routine,payload:row,updated_at:new Date().toISOString()})}catch(e){console.warn('Cloud load/sync failed',e);notify('Cloud sync failed. Your local data is still safe.','warn')}finally{cloudSyncing=false;updateAuthUI();await renderAll()}}
+async function putLocalSession(s){if(storageFallback||!db){const rows=getFallbackSessions();const idx=rows.findIndex(x=>x.id===s.id);if(idx>=0)rows[idx]=s;else rows.push(s);setFallbackSessions(rows);return true}return new Promise(res=>{const q=tx('readwrite').put(s);q.onsuccess=()=>res(true);q.onerror=()=>{storageFallback=true;const rows=getFallbackSessions();const idx=rows.findIndex(x=>x.id===s.id);if(idx>=0)rows[idx]=s;else rows.push(s);setFallbackSessions(rows);res(true)}})}
+async function putSession(s){await putLocalSession(s);if(cloudReady&&currentUser&&!cloudSyncing){try{await apiRequest(`workout_sessions?on_conflict=id`,{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({id:s.id,user_id:currentUser.id,session_date:s.date,routine:s.routine,payload:s,updated_at:new Date().toISOString()})});}catch(e){console.warn('Cloud session sync failed',e)}}}
+async function loadCloudState(){if(!cloudReady||!currentUser)return;cloudSyncing=true;try{const remoteSessions=await apiRequest(`workout_sessions?select=id,session_date,routine,payload,updated_at&user_id=eq.${encodeURIComponent(currentUser.id)}&order=session_date.asc`);const remotePrograms=await apiRequest(`workout_programs?select=program,updated_at&user_id=eq.${encodeURIComponent(currentUser.id)}&limit=1`);const local=await getLocalSessions();const map=new Map(local.map(x=>[x.id,x]));for(const x of remoteSessions||[]){const r=x.payload||{id:x.id,date:x.session_date,routine:x.routine};if(!map.has(r.id))map.set(r.id,r)}const merged=[...map.values()].sort((a,b)=>new Date(a.date)-new Date(b.date));if(storageFallback||!db)setFallbackSessions(merged);else for(const row of merged)await putLocalSession(row);
+    const localRec=await idbGet('program','current');
+    const localTs=localRec?.updatedAt||''; const remote=remotePrograms?.[0]||null; const remoteTs=remote?.updated_at||'';
+    if(remote?.program && (!localRec?.program || !localTs || remoteTs>localTs)){
+      state.program=normalizeProgram(remote.program); await saveProgramLocal(remoteTs||new Date().toISOString());
+    } else if(localRec?.program){
+      await apiRequest('workout_programs?on_conflict=user_id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({user_id:currentUser.id,program:state.program,updated_at:localTs||new Date().toISOString()})});
+    }
+    for(const row of merged){await apiRequest('workout_sessions?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({id:row.id,user_id:currentUser.id,session_date:row.date,routine:row.routine,payload:row,updated_at:new Date().toISOString()})});}
+  }catch(e){console.warn('Cloud load/sync failed',e);notify('Cloud sync failed. Your local data is still safe.','warn')}finally{cloudSyncing=false;updateAuthUI();await renderAll()}}
 async function syncProgramToCloud(){
   const updatedAt=new Date().toISOString();
-  await saveProgramLocal(updatedAt);
-  if(!cloudReady||!currentUser)return {ok:false,localOnly:true};
-  const {error}=await supabase.from('workout_programs').upsert({user_id:currentUser.id,program:state.program,updated_at:updatedAt});
-  if(error){
-    console.warn('Program sync failed',error);
-    notify('Program saved locally. Cloud save failed.','warn');
-    return {ok:false,localOnly:true,error};
-  }
-  return {ok:true};
+  const durable=await saveProgramLocal(updatedAt);
+  if(!cloudReady||!currentUser)return {ok:false,localOnly:durable};
+  try{await apiRequest('workout_programs?on_conflict=user_id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({user_id:currentUser.id,program:state.program,updated_at:updatedAt})});return {ok:true,localOnly:false};}
+  catch(error){console.warn('Program sync failed',error);return {ok:false,localOnly:durable,error}}
 }
-function notify(msg,type='ok'){const n=document.createElement('div');n.className=`statusbar ${type}`;n.textContent=msg;document.querySelector('.container').prepend(n);setTimeout(()=>n.remove(),3500)}
+function notify(msg,type='ok'){const n=document.createElement('div');n.className=`statusbar ${type}`;n.textContent=msg;document.querySelector('.container').prepend(n);setTimeout(()=>n.remove(),4500)}
 async function openAuth(){
   if(!cloudReady){
-    const url=prompt('Enter your Supabase Project URL');
-    if(!url)return;
-    const key=prompt('Enter your Supabase publishable key');
-    if(!key)return;
+    const url=prompt('Enter your Supabase Project URL');if(!url)return;
+    const key=prompt('Enter your Supabase publishable key');if(!key)return;
     try{
-      const cfg={supabaseUrl:url.trim(),supabaseKey:key.trim()};
-      localStorage.setItem('wt-cloud-config',JSON.stringify(cfg));
-      await idbPut('kv',{key:'cloud-config',value:cfg});
-      try{
-        if(!window.supabase){
-          await new Promise((resolve,reject)=>{
-            if(document.querySelector('script[data-supabase-loader="1"]')){
-              const wait=setInterval(()=>{if(window.supabase){clearInterval(wait);resolve();}},25);
-              setTimeout(()=>{clearInterval(wait);reject(new Error('Supabase library load timed out'));},10000);
-              return;
-            }
-            const s=document.createElement('script');s.dataset.supabaseLoader='1';s.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';s.onload=resolve;s.onerror=()=>reject(new Error('Could not load Supabase client library'));document.head.appendChild(s);
-          });
-        }
-        supabase=window.supabase.createClient(cfg.supabaseUrl,cfg.supabaseKey);
-        cloudReady=true;
-        await initCloud();
-        updateAuthUI();
-        notify('Cloud sync connected.','ok');
-      }catch(e){
-        alert('Cloud settings were saved, but the Supabase library could not be connected. '+(e?.message||e));
-      }
-    }catch(e){
-      alert('Could not save cloud settings on this device.');
-    }
-    return;
+      const saved=await saveCloudConfig({supabaseUrl:url,supabaseKey:key});
+      if(!saved)throw new Error('Could not save cloud settings');
+      cloudReady=true;
+      await testCloudConnection();
+      updateAuthUI();
+      notify('Cloud sync connected.','ok');
+    }catch(e){cloudReady=false;alert('Cloud settings were saved, but the Supabase connection failed. '+(e?.message||e));return;}
   }
-  const m=el('authModal');m.classList.remove('hidden');m.innerHTML=`<div class="modal-card"><div class="row between"><div><div class="h2">Cloud Sync</div><div class="muted">Sign in to sync your workouts across devices.</div></div><button class="iconbtn" id="closeAuth">✕</button></div><div class="auth-grid" style="margin-top:14px"><input class="input" id="authEmail" type="email" placeholder="Email"><input class="input" id="authPassword" type="password" placeholder="Password"><div class="row"><button class="btn primary" id="signInBtn">Sign in</button><button class="btn" id="signUpBtn">Create account</button></div><div class="tiny muted">Your workout data is protected by Supabase Row Level Security.</div></div></div>`;el('closeAuth').onclick=()=>m.classList.add('hidden');el('signInBtn').onclick=async()=>{const email=el('authEmail').value.trim(),password=el('authPassword').value;if(!email||!password)return alert('Enter an email and password.');const {error}=await supabase.auth.signInWithPassword({email,password});if(error)return alert(error.message);m.classList.add('hidden')};el('signUpBtn').onclick=async()=>{const email=el('authEmail').value.trim(),password=el('authPassword').value;if(!email||!password)return alert('Enter an email and password.');if(password.length<6)return alert('Use at least 6 characters for the password.');const {error}=await supabase.auth.signUp({email,password});if(error)return alert(error.message);alert('Account created. Check your email if confirmation is required, then sign in.')}}
-async function signOut(){if(cloudReady){await supabase.auth.signOut();currentUser=null;updateAuthUI();await renderAll()}}
-function updateAuthUI(){const b=el('settingsBtn');if(!b)return;b.title=currentUser?`Signed in as ${currentUser.email}`:'Cloud Sync';b.textContent=currentUser?'☁️':'⚙️'}
-async function initCloud(){if(!cloudReady)return;const {data}=await supabase.auth.getSession();currentUser=data?.session?.user||null;updateAuthUI();supabase.auth.onAuthStateChange(async(_event,session)=>{currentUser=session?.user||null;updateAuthUI();if(currentUser)await loadCloudState();else await renderAll()});if(currentUser)await loadCloudState()}
+  const m=el('authModal');m.classList.remove('hidden');m.innerHTML=`<div class="modal-card"><div class="row between"><div><div class="h2">Cloud Sync</div><div class="muted">Sign in to sync your workouts across devices.</div></div><button class="iconbtn" id="closeAuth">✕</button></div><div class="auth-grid" style="margin-top:14px"><input class="input" id="authEmail" type="email" placeholder="Email"><input class="input" id="authPassword" type="password" placeholder="Password"><div class="row"><button class="btn primary" id="signInBtn">Sign in</button><button class="btn" id="signUpBtn">Create account</button></div><div class="tiny muted">Your workout data is protected by Supabase Row Level Security.</div></div></div>`;
+  el('closeAuth').onclick=()=>m.classList.add('hidden');
+  el('signInBtn').onclick=async()=>{try{const email=el('authEmail').value.trim(),password=el('authPassword').value;if(!email||!password)return alert('Enter an email and password.');const data=await authRequest('token?grant_type=password',{email,password});currentUser=data.user||null;await saveCloudSession({access_token:data.access_token,refresh_token:data.refresh_token,expires_at:Date.now()+Number(data.expires_in||3600)*1000,user:currentUser});m.classList.add('hidden');updateAuthUI();notify('Signed in. Syncing your data…','ok');await loadCloudState();}catch(e){alert('Sign in failed: '+(e?.message||e));}};
+  el('signUpBtn').onclick=async()=>{try{const email=el('authEmail').value.trim(),password=el('authPassword').value;if(!email||!password)return alert('Enter an email and password.');if(password.length<6)return alert('Use at least 6 characters for the password.');const data=await authRequest('signup',{email,password,options:{emailRedirectTo:location.href}});if(data.access_token){currentUser=data.user||null;await saveCloudSession({access_token:data.access_token,refresh_token:data.refresh_token,expires_at:Date.now()+Number(data.expires_in||3600)*1000,user:currentUser});m.classList.add('hidden');updateAuthUI();await loadCloudState();notify('Account created and signed in.','ok');}else{alert('Account created. Check your email if confirmation is required, then sign in.');}}catch(e){alert('Account creation failed: '+(e?.message||e));}};
+}
+async function signOut(){await saveCloudSession(null);currentUser=null;cloudSyncing=false;updateAuthUI();await renderAll()}
+function updateAuthUI(){const b=el('settingsBtn');if(!b)return;b.title=currentUser?`Signed in as ${currentUser.email}`:(cloudReady?'Cloud Sync — not signed in':'Cloud Sync — not configured');b.textContent=currentUser?'☁️':'⚙️'}
+async function testCloudConnection(){if(!cloudConfig)throw new Error('Missing Supabase URL/key');const res=await fetch(`${cloudConfig.supabaseUrl}/auth/v1/settings`,{headers:{'apikey':cloudConfig.supabaseKey}});if(!res.ok){const txt=await res.text();throw new Error(txt||`Supabase returned HTTP ${res.status}`)}return true}
+async function initCloud(){
+  cloudConfig=await getSavedCloudConfig();
+  if(!cloudConfig){cloudReady=false;updateAuthUI();return;}
+  cloudReady=true;
+  cloudSession=await getSavedCloudSession();
+  if(cloudSession){const ok=await refreshCloudSession(false);if(!ok){currentUser=null;cloudSession=null;}}
+  currentUser=cloudSession?.user||null;updateAuthUI();
+  if(currentUser)await loadCloudState();
+}
 function uid(){return crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)}
 function el(id){return document.getElementById(id)}
 function saveDraft(){localStorage.setItem('wt-draft',JSON.stringify(state.draft))}
@@ -288,6 +351,7 @@ function bindProgram(){
   document.querySelectorAll('[data-movedown]').forEach(b=>b.onclick=()=>moveExercise(b.dataset.movedown,1));
   el('addRoutine').onclick=()=>{const name=prompt('Routine name');if(!name)return;const key=`routine-${Date.now()}`;state.program.push({key,name:name.trim(),mode:'custom',exercises:[]});state.routine=key;renderProgram()};
   el('saveProgram').onclick=async()=>{
+    const button=el('saveProgram'); if(button){button.disabled=true;button.textContent='Saving…';}
     try{
       for(const r of state.program){
         if(r.mode==='5/3/1'){
@@ -314,24 +378,21 @@ function bindProgram(){
       }
       const updatedAt=new Date().toISOString();
       const durable=await saveProgramLocal(updatedAt);
-      state.draft={};
-      saveDraft();
-      let cloudSaved=false;
+      if(!durable)throw new Error('Could not save the program to this device.');
+      state.draft={}; saveDraft();
       if(cloudReady&&currentUser){
-        const {error}=await supabase.from('workout_programs').upsert({user_id:currentUser.id,program:state.program,updated_at:updatedAt});
-        if(error){
-          console.warn('Program cloud save failed',error);
-          notify('Program saved on this device. Cloud save failed.','warn');
-        } else {
-          cloudSaved=true;
-        }
+        try{
+          await apiRequest('workout_programs?on_conflict=user_id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({user_id:currentUser.id,program:state.program,updated_at:updatedAt})});
+          notify('Program saved and synced to the cloud.','ok');
+        }catch(err){console.warn('Program cloud save failed',err);notify('Program saved on this device. Cloud sync failed: '+(err?.message||err),'warn');}
+      }else{
+        notify(cloudReady?'Program saved on this device. Sign in to sync it.':'Program saved on this device.','ok');
       }
-      await renderAll();
-      notify(cloudSaved?`Program saved and synced. ${durable?'Local backup also saved.':''}`:`Program saved${durable?' locally and in app storage':' locally only'}.`,'ok');
+      try{await renderAll();}catch(renderErr){console.warn('Refresh after program save failed',renderErr)}
     }catch(err){
       console.error('Program save failed',err);
       notify('Program could not be saved: '+(err?.message||String(err)),'warn');
-    }
+    }finally{if(button){button.disabled=false;button.textContent='Save Program';}}
   };
   el('exportData').onclick=async()=>{const payload={version:3,exportedAt:new Date().toISOString(),program:state.program,sessions:await getSessions()};const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));a.download=`workout-backup-${today()}.json`;a.click()};
   el('importData').onchange=async e=>{try{const f=e.target.files[0];if(!f)return;const data=JSON.parse(await f.text());if(data.program)state.program=normalizeProgram(data.program);if(Array.isArray(data.sessions))for(const sess of data.sessions)await putSession(sess);await saveProgramLocal();await syncProgramToCloud();await renderAll();notify('Backup imported.','ok')}catch(err){alert('Could not import that backup file.')}}
@@ -355,49 +416,22 @@ async function bootApp(){
     b.style.display='block';
   }
   try{
-    let cfg=window.WORKOUT_CONFIG||{};
-    try{ const saved=await getSavedCloudConfig(); if(saved) cfg=saved; }catch(e){}
-    if(!cfg.supabaseUrl || !cfg.supabaseKey || String(cfg.supabaseUrl).includes('YOUR-PROJECT-REF') || String(cfg.supabaseKey).includes('YOUR-PUBLISHABLE-KEY')){
+    let cfg=await getSavedCloudConfig();
+    if(!cfg){
       try{
         const r=await fetch('config.js',{cache:'no-store'});
         if(r.ok){
           const txt=await r.text();
           const m=txt.match(/supabaseUrl\s*:\s*['"]([^'"]+)['"][\s\S]*?supabaseKey\s*:\s*['"]([^'"]+)['"]/);
-          if(m){ cfg={supabaseUrl:m[1],supabaseKey:m[2]}; await idbPut('kv',{key:'cloud-config',value:cfg}); }
+          if(m) cfg=normalizeCloudConfig({supabaseUrl:m[1],supabaseKey:m[2]});
         }
       }catch(e){}
     }
-    const configured=!!cfg.supabaseUrl && !!cfg.supabaseKey && !String(cfg.supabaseUrl).includes('YOUR-PROJECT-REF') && !String(cfg.supabaseKey).includes('YOUR-PUBLISHABLE-KEY');
-    if(configured){
-      try{localStorage.setItem('wt-cloud-config',JSON.stringify(cfg))}catch(e){}
-      await idbPut('kv',{key:'cloud-config',value:cfg});
-      if(!window.supabase){
-        await new Promise((resolve,reject)=>{
-          if(document.querySelector('script[data-supabase-loader="1"]')){
-            const wait=setInterval(()=>{if(window.supabase){clearInterval(wait);resolve();}},25);
-            setTimeout(()=>{clearInterval(wait);reject(new Error('Could not load Supabase client library'))},10000);
-            return;
-          }
-          const s=document.createElement('script');
-          s.dataset.supabaseLoader='1';
-          s.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
-          s.onload=resolve;
-          s.onerror=()=>reject(new Error('Could not load Supabase client library'));
-          document.head.appendChild(s);
-        });
-      }
-      if(!window.supabase) throw new Error('Supabase client library did not load');
-      if(!supabase) supabase=window.supabase.createClient(cfg.supabaseUrl,cfg.supabaseKey);
-      cloudReady=true;
-      await initCloud();
-    } else {
-      console.warn('Cloud sync not configured.');
-      updateAuthUI();
-    }
+    if(cfg) await saveCloudConfig(cfg);
+    await initCloud();
   }catch(e){
     console.warn('Optional cloud initialization failed',e);
-    cloudReady=false;
-    updateAuthUI();
+    cloudReady=false;updateAuthUI();
   }
 }
 bootApp();
