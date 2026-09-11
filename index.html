@@ -88,23 +88,33 @@ function normalizeProgram(program){
 function parseWeights(v){if(Array.isArray(v))return v.map(Number).filter(n=>!Number.isNaN(n));return String(v??'').split(',').map(x=>x.trim()).filter(Boolean).map(Number).filter(n=>!Number.isNaN(n));}
 function xNotBlank(x){return String(x).trim()!=='';}
 function stepCount(ex){const m=String(ex.sets||'').match(/\d+/);return Math.max(Number(m?.[0])||0,ex.targetWeights?.length||0,3);}
-const storedProgram=(()=>{try{return JSON.parse(localStorage.getItem('wt-program')||'null')}catch(e){return null}})();
-const state={routine:localStorage.getItem('wt-routine')||'Squat',draft:JSON.parse(localStorage.getItem('wt-draft')||'{}'),program:normalizeProgram(storedProgram||PROGRAM)};
+function storageUserId(){return currentUser?.id||'guest'}
+function scopedKey(base,userId=storageUserId()){return `${base}:${userId}`}
+function readLocalJson(key,fallback=null){try{return JSON.parse(localStorage.getItem(key)||'null')??fallback}catch(e){return fallback}}
+const initialStoredProgram=readLocalJson(scopedKey('wt-program','guest'),null);
+const state={routine:localStorage.getItem('wt-routine')||'Squat',draft:readLocalJson(scopedKey('wt-draft','guest'),{}),program:normalizeProgram(initialStoredProgram||PROGRAM)};
 let stateLoadedFromDB=false;
-async function loadDurableState(){
-  const rec=await idbGet('program','current');
+async function loadDurableState(userId=storageUserId()){
+  const key=scopedKey('current',userId);
+  const rec=await idbGet('program',key);
+  const storedProgram=readLocalJson(scopedKey('wt-program',userId),null);
   if(rec?.program){
-    const localTs=localStorage.getItem('wt-program-updated')||'';
+    const localTs=localStorage.getItem(scopedKey('wt-program-updated',userId))||'';
     const dbTs=rec.updatedAt||'';
-    if(!localTs || dbTs>=localTs || !storedProgram){ state.program=normalizeProgram(rec.program); localStorage.setItem('wt-program',JSON.stringify(state.program)); if(dbTs)localStorage.setItem('wt-program-updated',dbTs); }
+    if(!localTs || dbTs>=localTs || !storedProgram){ state.program=normalizeProgram(rec.program); try{localStorage.setItem(scopedKey('wt-program',userId),JSON.stringify(state.program)); if(dbTs)localStorage.setItem(scopedKey('wt-program-updated',userId),dbTs);}catch(e){} }
+  } else if(storedProgram){
+    state.program=normalizeProgram(storedProgram);
+  } else {
+    state.program=normalizeProgram(PROGRAM);
   }
   const cfg=await idbGet('kv','cloud-config');
   if(cfg?.value?.supabaseUrl && cfg?.value?.supabaseKey){ try{ localStorage.setItem('wt-cloud-config',JSON.stringify(cfg.value)); }catch(e){} }
   stateLoadedFromDB=true;
 }
 async function saveProgramLocal(updatedAt=new Date().toISOString()){
-  try{localStorage.setItem('wt-program',JSON.stringify(state.program));localStorage.setItem('wt-program-updated',updatedAt)}catch(e){}
-  return await idbPut('program',{key:'current',program:state.program,updatedAt});
+  const userId=storageUserId();
+  try{localStorage.setItem(scopedKey('wt-program',userId),JSON.stringify(state.program));localStorage.setItem(scopedKey('wt-program-updated',userId),updatedAt)}catch(e){}
+  return await idbPut('program',{key:scopedKey('current',userId),userId,program:state.program,updatedAt});
 }
 async function getSavedCloudConfig(){
   try{const r=await idbGet('kv','cloud-config');if(r?.value?.supabaseUrl&&r?.value?.supabaseKey)return r.value;}catch(e){}
@@ -113,7 +123,7 @@ async function getSavedCloudConfig(){
 }
 
 let db=null; let storageFallback=false; let cloudConfig=null; let cloudReady=false; let currentUser=null; let cloudSession=null; let cloudSyncing=false;
-const LOCAL_SESSIONS_KEY='wt-sessions';
+function localSessionsKey(userId=storageUserId()){return scopedKey('wt-sessions',userId)}
 
 function normalizeCloudConfig(cfg){
   if(!cfg) return null;
@@ -187,11 +197,11 @@ function idbGet(store,key){if(!db)return Promise.resolve(null);return new Promis
 function idbPut(store,value){if(!db)return Promise.resolve(false);return new Promise(res=>{try{const q=db.transaction(store,'readwrite').objectStore(store).put(value);q.onsuccess=()=>res(true);q.onerror=()=>res(false)}catch(e){res(false)}})}
 function idbDelete(store,key){if(!db)return Promise.resolve(false);return new Promise(res=>{try{const q=db.transaction(store,'readwrite').objectStore(store).delete(key);q.onsuccess=()=>res(true);q.onerror=()=>res(false)}catch(e){res(false)}})}
 function tx(mode='readonly'){return db.transaction('sessions',mode).objectStore('sessions')}
-function getFallbackSessions(){try{return JSON.parse(localStorage.getItem(LOCAL_SESSIONS_KEY)||'[]')}catch(e){return []}}
-function setFallbackSessions(rows){localStorage.setItem(LOCAL_SESSIONS_KEY,JSON.stringify(rows))}
-async function getLocalSessions(){if(storageFallback||!db)return getFallbackSessions().sort((a,b)=>new Date(a.date)-new Date(b.date));return new Promise(res=>{const q=tx().getAll();q.onsuccess=()=>res(q.result.sort((a,b)=>new Date(a.date)-new Date(b.date)));q.onerror=()=>{storageFallback=true;res(getFallbackSessions())}})}
+function getFallbackSessions(){try{return JSON.parse(localStorage.getItem(localSessionsKey())||'[]').filter(x=>x?.ownerId===storageUserId())}catch(e){return []}}
+function setFallbackSessions(rows){localStorage.setItem(localSessionsKey(),JSON.stringify(rows.map(x=>({...x,ownerId:storageUserId()}))))}
+async function getLocalSessions(){const uid=storageUserId();if(storageFallback||!db)return getFallbackSessions().sort((a,b)=>new Date(a.date)-new Date(b.date));return new Promise(res=>{const q=tx().getAll();q.onsuccess=()=>res(q.result.filter(x=>x?.ownerId===uid).sort((a,b)=>new Date(a.date)-new Date(b.date)));q.onerror=()=>{storageFallback=true;res(getFallbackSessions())}})}
 async function getSessions(){return getLocalSessions()}
-async function putLocalSession(s){if(storageFallback||!db){const rows=getFallbackSessions();const idx=rows.findIndex(x=>x.id===s.id);if(idx>=0)rows[idx]=s;else rows.push(s);setFallbackSessions(rows);return true}return new Promise(res=>{const q=tx('readwrite').put(s);q.onsuccess=()=>res(true);q.onerror=()=>{storageFallback=true;const rows=getFallbackSessions();const idx=rows.findIndex(x=>x.id===s.id);if(idx>=0)rows[idx]=s;else rows.push(s);setFallbackSessions(rows);res(true)}})}
+async function putLocalSession(s){const ownerId=storageUserId();const scoped={...s,ownerId};if(storageFallback||!db){const rows=getFallbackSessions();const idx=rows.findIndex(x=>x.id===scoped.id);if(idx>=0)rows[idx]=scoped;else rows.push(scoped);setFallbackSessions(rows);return true}return new Promise(res=>{const q=tx('readwrite').put(scoped);q.onsuccess=()=>res(true);q.onerror=()=>{storageFallback=true;const rows=getFallbackSessions();const idx=rows.findIndex(x=>x.id===scoped.id);if(idx>=0)rows[idx]=scoped;else rows.push(scoped);setFallbackSessions(rows);res(true)}})}
 async function putSession(s){await putLocalSession(s);if(cloudReady&&currentUser&&!cloudSyncing){try{await apiRequest(`workout_sessions?on_conflict=id`,{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({id:s.id,user_id:currentUser.id,session_date:s.date,routine:s.routine,payload:s,updated_at:new Date().toISOString()})});}catch(e){console.warn('Cloud session sync failed',e)}}}
 async function loadCloudState(){if(!cloudReady||!currentUser)return;cloudSyncing=true;try{const remoteSessions=await apiRequest(`workout_sessions?select=id,session_date,routine,payload,updated_at&user_id=eq.${encodeURIComponent(currentUser.id)}&order=session_date.asc`);const remotePrograms=await apiRequest(`workout_programs?select=program,updated_at&user_id=eq.${encodeURIComponent(currentUser.id)}&limit=1`);const local=await getLocalSessions();const map=new Map(local.map(x=>[x.id,x]));for(const x of remoteSessions||[]){const r=x.payload||{id:x.id,date:x.session_date,routine:x.routine};if(!map.has(r.id))map.set(r.id,r)}const merged=[...map.values()].sort((a,b)=>new Date(a.date)-new Date(b.date));if(storageFallback||!db)setFallbackSessions(merged);else for(const row of merged)await putLocalSession(row);
     const localRec=await idbGet('program','current');
@@ -226,10 +236,29 @@ async function openAuth(){
   }
   const m=el('authModal');m.classList.remove('hidden');m.innerHTML=`<div class="modal-card"><div class="row between"><div><div class="h2">Cloud Sync</div><div class="muted">Sign in to sync your workouts across devices.</div></div><button class="iconbtn" id="closeAuth">✕</button></div><div class="auth-grid" style="margin-top:14px"><input class="input" id="authEmail" type="email" placeholder="Email"><input class="input" id="authPassword" type="password" placeholder="Password"><div class="row"><button class="btn primary" id="signInBtn">Sign in</button><button class="btn" id="signUpBtn">Create account</button></div><div class="tiny muted">Your workout data is protected by Supabase Row Level Security.</div></div></div>`;
   el('closeAuth').onclick=()=>m.classList.add('hidden');
-  el('signInBtn').onclick=async()=>{try{const email=el('authEmail').value.trim(),password=el('authPassword').value;if(!email||!password)return alert('Enter an email and password.');const data=await authRequest('token?grant_type=password',{email,password});currentUser=data.user||null;await saveCloudSession({access_token:data.access_token,refresh_token:data.refresh_token,expires_at:Date.now()+Number(data.expires_in||3600)*1000,user:currentUser});m.classList.add('hidden');updateAuthUI();notify('Signed in. Syncing your data…','ok');await loadCloudState();}catch(e){alert('Sign in failed: '+(e?.message||e));}};
-  el('signUpBtn').onclick=async()=>{try{const email=el('authEmail').value.trim(),password=el('authPassword').value;if(!email||!password)return alert('Enter an email and password.');if(password.length<6)return alert('Use at least 6 characters for the password.');const data=await authRequest('signup',{email,password,options:{emailRedirectTo:location.href}});if(data.access_token){currentUser=data.user||null;await saveCloudSession({access_token:data.access_token,refresh_token:data.refresh_token,expires_at:Date.now()+Number(data.expires_in||3600)*1000,user:currentUser});m.classList.add('hidden');updateAuthUI();await loadCloudState();notify('Account created and signed in.','ok');}else{alert('Account created. Check your email if confirmation is required, then sign in.');}}catch(e){alert('Account creation failed: '+(e?.message||e));}};
+  el('signInBtn').onclick=async()=>{try{const email=el('authEmail').value.trim(),password=el('authPassword').value;if(!email||!password)return alert('Enter an email and password.');const data=await authRequest('token?grant_type=password',{email,password});await activateAccount(data.user||null,{access_token:data.access_token,refresh_token:data.refresh_token,expires_at:Date.now()+Number(data.expires_in||3600)*1000,user:data.user||null});m.classList.add('hidden');notify('Signed in. Syncing your data…','ok');await loadCloudState();}catch(e){alert('Sign in failed: '+(e?.message||e));}};
+  el('signUpBtn').onclick=async()=>{try{const email=el('authEmail').value.trim(),password=el('authPassword').value;if(!email||!password)return alert('Enter an email and password.');if(password.length<6)return alert('Use at least 6 characters for the password.');const data=await authRequest('signup',{email,password,options:{emailRedirectTo:location.href}});if(data.access_token){await activateAccount(data.user||null,{access_token:data.access_token,refresh_token:data.refresh_token,expires_at:Date.now()+Number(data.expires_in||3600)*1000,user:data.user||null});m.classList.add('hidden');await loadCloudState();notify('Account created and signed in.','ok');}else{alert('Account created. Check your email if confirmation is required, then sign in.');}}catch(e){alert('Account creation failed: '+(e?.message||e));}};
 }
-async function signOut(){await saveCloudSession(null);currentUser=null;cloudSyncing=false;updateAuthUI();await renderAll()}
+async function activateAccount(user,session){
+  currentUser=user||null;
+  await saveCloudSession(session||null);
+  state.program=normalizeProgram(PROGRAM);
+  state.draft={};
+  if(currentUser) await loadDurableState(currentUser.id);
+  updateAuthUI();
+  await renderAll();
+}
+async function signOut(){
+  await saveCloudSession(null);
+  currentUser=null;
+  cloudSyncing=false;
+  state.program=normalizeProgram(PROGRAM);
+  state.draft={};
+  await loadDurableState('guest');
+  updateAuthUI();
+  await renderAll();
+  notify('Signed out. This device is now using the guest/local profile.','ok');
+}
 function updateAuthUI(){const b=el('settingsBtn');if(!b)return;b.title=currentUser?`Signed in as ${currentUser.email}`:(cloudReady?'Cloud Sync — not signed in':'Cloud Sync — not configured');b.textContent=currentUser?'☁️':'⚙️'}
 async function testCloudConnection(){if(!cloudConfig)throw new Error('Missing Supabase URL/key');const res=await fetch(`${cloudConfig.supabaseUrl}/auth/v1/settings`,{headers:{'apikey':cloudConfig.supabaseKey}});if(!res.ok){const txt=await res.text();throw new Error(txt||`Supabase returned HTTP ${res.status}`)}return true}
 async function initCloud(){
@@ -238,7 +267,10 @@ async function initCloud(){
   cloudReady=true;
   cloudSession=await getSavedCloudSession();
   if(cloudSession){const ok=await refreshCloudSession(false);if(!ok){currentUser=null;cloudSession=null;}}
-  currentUser=cloudSession?.user||null;updateAuthUI();
+  currentUser=cloudSession?.user||null;
+  if(currentUser) await loadDurableState(currentUser.id);
+  else await loadDurableState('guest');
+  updateAuthUI();
   if(currentUser)await loadCloudState();
 }
 function uid(){return crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)}

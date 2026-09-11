@@ -1,3 +1,14 @@
-Replace index.html and sw.js in the existing GitHub Pages repository. Keep your existing config.js exactly as-is. No Supabase database changes are required.
+# Workout Tracker - Progress + Bodyweight update
 
-This version stores program and cloud configuration in IndexedDB as well as localStorage, so program edits and cloud settings persist reliably in installed/mobile browser contexts.
+Replace only `index.html` and `sw.js` in the existing GitHub Pages repository. Keep your existing `config.js` or saved app configuration untouched.
+
+This version adds:
+- Progress dashboard with exercise/metric/timeframe selectors
+- 5/3/1 cycle history and AMRAP history
+- Training Max history
+- PR/e1RM summary
+- Bodyweight logging per workout
+- Bodyweight exercises and bodyweight + added-load exercise types
+- Effective-load, reps and volume calculations when session bodyweight is available
+
+After deployment, wait for GitHub Pages to finish, then hard-refresh once. Do not delete IndexedDB data.

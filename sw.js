@@ -1,4 +1,4 @@
-const CACHE = 'workout-tracker-v7';
+const CACHE = 'workout-tracker-v8';
 self.addEventListener('install', event => {
   self.skipWaiting();
 });
