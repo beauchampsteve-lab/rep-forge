@@ -35,7 +35,7 @@ button,input,select,textarea{font:inherit} button{cursor:pointer;border:0}.top{p
 </main>
 <div id="authModal" class="modal hidden"></div>
 <nav class="bottom"><button class="nav active" data-view="workout">Workout</button><button class="nav" data-view="dashboard">Progress</button><button class="nav" data-view="history">History</button><button class="nav" data-view="program">Program</button></nav>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script><script>
+<script>
 // Supabase configuration.
 // Replace these two placeholders with your Supabase project's URL and publishable key.
 // Do NOT use the service_role key here.
@@ -122,7 +122,29 @@ function bindProgram(){document.querySelectorAll('[data-addex]').forEach(b=>b.on
 function moveExercise(ref,delta){const [rk,id]=ref.split('|');const r=state.program.find(x=>x.key===rk);if(!r)return;const i=r.exercises.findIndex(x=>x.id===id),j=i+delta;if(i<0||j<0||j>=r.exercises.length)return;[r.exercises[i],r.exercises[j]]=[r.exercises[j],r.exercises[i]];renderProgram()}
 function nav(view){document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id===`view-${view}`));document.querySelectorAll('.nav').forEach(b=>b.classList.toggle('active',b.dataset.view===view));if(view==='workout')renderWorkout();if(view==='dashboard')renderDashboard();if(view==='history')renderHistory();if(view==='program')renderProgram()}
 async function renderAll(){await renderWorkout();await renderDashboard();await renderHistory();renderProgram()}
-document.querySelectorAll('.nav').forEach(b=>b.onclick=()=>nav(b.dataset.view));el('settingsBtn').onclick=()=>{if(currentUser){if(confirm(`Signed in as ${currentUser.email}. Sign out?`))signOut()}else openAuth()};openDB().then(async()=>{await renderAll();await initCloud()});
+document.querySelectorAll('.nav').forEach(b=>b.onclick=()=>nav(b.dataset.view));
+el('settingsBtn').onclick=()=>{if(currentUser){if(confirm(`Signed in as ${currentUser.email}. Sign out?`))signOut()}else openAuth()};
+async function bootApp(){
+  try{
+    await openDB();
+    await renderAll();
+    document.getElementById('bootError').style.display='none';
+  }catch(err){
+    console.error('Workout Tracker boot error',err);
+    const b=document.getElementById('bootError');
+    b.textContent='Workout Tracker could not start: '+(err?.message||String(err));
+    b.style.display='block';
+  }
+  try{
+    if(window.WORKOUT_CONFIG && window.WORKOUT_CONFIG.supabaseUrl && !window.WORKOUT_CONFIG.supabaseUrl.includes('YOUR-PROJECT-REF')){
+      await new Promise((resolve,reject)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';s.onload=resolve;s.onerror=reject;document.head.appendChild(s)});
+      if(window.supabase){
+        try{supabase=window.supabase.createClient(window.WORKOUT_CONFIG.supabaseUrl,window.WORKOUT_CONFIG.supabaseKey);cloudReady=true;await initCloud()}catch(e){console.warn('Supabase init failed',e)}
+      }
+    }
+  }catch(e){console.warn('Optional cloud initialization failed',e)}
+}
+bootApp();
 
 </script><script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}))}</script>
 <div id="bootError" style="display:none;position:fixed;left:12px;right:12px;bottom:90px;z-index:100;background:#fee2e2;color:#991b1b;padding:12px;border:1px solid #fecaca;border-radius:12px;font:14px system-ui">The app did not initialize. Refresh the page or check the browser console.</div><script>setTimeout(()=>{try{if(!document.getElementById("workoutView").innerHTML.trim()){document.getElementById("bootError").style.display="block"}}catch(e){}},1800);</script></body></html>
