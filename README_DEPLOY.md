@@ -1,49 +1,30 @@
-# Workout Tracker - Material Usability v1
+# Workout Tracker — Exercise Catalog & Smart Substitutions v1.3
 
-## Deployment
-Replace these files in the GitHub Pages repository:
-- index.html
-- sw.js
-- manifest.json
-- icon-192.png (optional; unchanged)
-
-Keep the existing `config.js` unchanged.
-
-Wait for GitHub Pages deployment to complete, then hard-refresh once on desktop. On Android, reopen the installed PWA; reinstall only if the previous app shell remains cached.
+## Deploy
+Replace `index.html`, `sw.js`, and `manifest.json` in GitHub Pages. Keep your existing `config.js` unchanged. `icon-192.png` may also be replaced.
 
 ## Build Notes
-- Added a Material-inspired visual and interaction pass aimed at Android/PWA use.
-- Reworked Program editing around progressive disclosure to reduce scrolling and cognitive load.
-- Workouts are now compact expandable cards instead of displaying every editor field at once.
-- Exercises are now compact expandable rows with Active toggles and concise summaries.
-- Exercise editing is grouped into:
-  - Basics: name, sets, reps/duration, metric.
-  - Load & progression: load type, targets, progression model, rule and increment.
-  - Workout options: superset group, rest, warmups and substitutions.
-- 5/3/1 settings are collapsed by default and summarized with TM/cycle/week.
-- Program actions use a compact sticky action bar on mobile.
-- Settings was rebuilt as a native-style preference list.
-- Supabase URL/key moved under an Advanced section to reduce routine clutter.
-- Added an in-app User Guide covering:
-  - Getting started
-  - Workout logging
-  - Programs and exercises
-  - 5/3/1
-  - Accessory progression
-  - Reps vs timed exercises
-  - Bodyweight / added load
-  - Supersets and rest
-  - Progress and history
-  - Cloud sync and backups
-- Updated theme/surface styling, buttons, controls, navigation and touch targets toward Material design conventions.
-- Preserved current workout logic, time metrics, bodyweight support, progression logic, cloud sync and multi-user behavior.
+- Added a built-in curated exercise catalog with movement pattern, primary/secondary muscles, equipment, load type, metric, laterality and difficulty metadata.
+- Added Material-style catalog search, equipment filtering, Favorites, Recents, In Programs and My Exercises views.
+- Program `+ Exercise` now opens the catalog instead of creating a blank exercise first.
+- Added custom-exercise fallback for movements not in the built-in catalog.
+- Added one-tap Replace flow from Program.
+- Added in-workout Substitute action for accessory exercises.
+- Added metadata-driven substitute recommendations based on movement pattern, muscle overlap, load/metric and laterality.
+- Added `Just for today` substitutions that do not change the saved program.
+- Added `Replace in this program` substitution option for permanent changes.
+- Temporary substitutions preserve both planned and performed exercise identity in session history.
+- Each substituted exercise keeps independent history/progression; planned exercise progression is not advanced by a temporary substitute.
+- Added Favorites and Recent exercises to speed repeat use.
+- Updated User Guide with catalog and substitution workflows.
+- Preserved time-vs-reps metrics, bodyweight modes, 5/3/1, progression, cloud sync, and existing Supabase schema.
 
 ## Data / Schema Impact
 - No Supabase schema changes.
-- No program or workout data migration.
-- Existing programs, history and account data are preserved.
-- Existing `config.js` must be preserved.
+- New catalog metadata and substitution references live inside existing JSON payloads.
+- Existing program exercises are automatically matched to catalog entries by exact name where possible.
+- Existing custom exercises remain valid.
 
 ## Migration / Backup
 - No migration required.
-- A JSON backup is still recommended before any major app update.
+- Exporting a JSON backup before deployment remains recommended.
