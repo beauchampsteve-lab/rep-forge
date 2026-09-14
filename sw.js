@@ -1,4 +1,4 @@
-const CACHE='repforge-brand-v140';
+const CACHE='repforge-onboarding-v150';
 const CORE=['./manifest.json','./icon-192.png','./icon-512.png','./logo-mark.png','./favicon-32.png','./favicon-16.png'];
 self.addEventListener('install',e=>{self.skipWaiting();e.waitUntil(caches.open(CACHE).then(c=>c.addAll(CORE)).catch(()=>{}))});
 self.addEventListener('activate',e=>e.waitUntil(Promise.all([self.clients.claim(),caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k))))])));
