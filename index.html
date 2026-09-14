@@ -7,6 +7,7 @@
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon-192.png">
 <title>Workout Tracker</title>
+<meta name="workout-build" content="2026-09-14-cloud-sync-v3">
 <style>
 :root{--bg:#f3f4f6;--card:#fff;--text:#0f172a;--muted:#64748b;--line:#e2e8f0;--blue:#2563eb;--blue2:#dbeafe;--green:#15803d;--green2:#dcfce7;--orange:#c2410c;--orange2:#ffedd5;--red:#b91c1c;--red2:#fee2e2;--purple:#6d28d9;--purple2:#ede9fe;--radius:18px}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding-bottom:92px}button,input,select,textarea{font:inherit}button{cursor:pointer}.top{position:sticky;top:0;z-index:20;background:rgba(243,244,246,.94);backdrop-filter:blur(12px);border-bottom:1px solid var(--line);padding:12px 14px 10px}.topbar{display:flex;justify-content:space-between;align-items:center;gap:10px}.brand{font-weight:850;font-size:20px}.sub{font-size:12px;color:var(--muted)}.container{max-width:900px;margin:auto;padding:14px}.view{display:none}.view.active{display:block}.h1{font-size:25px;font-weight:850;margin:6px 0}.h2{font-size:17px;font-weight:800;margin:0 0 8px}.muted{color:var(--muted)}.tiny{font-size:12px}.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px;margin:0 0 12px;box-shadow:0 3px 14px rgba(15,23,42,.04)}.row{display:flex;gap:9px;align-items:center}.between{justify-content:space-between}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.btn{border:1px solid var(--line);background:#fff;color:var(--text);border-radius:12px;padding:10px 12px;font-weight:750}.btn.primary{background:#0f172a;color:#fff;border-color:#0f172a}.btn.blue{background:var(--blue);color:#fff;border-color:var(--blue)}.btn.green{background:var(--green);color:#fff;border-color:var(--green)}.btn.warn{background:var(--orange);color:#fff;border-color:var(--orange)}.btn.danger{background:var(--red);color:#fff;border-color:var(--red)}.btn.small{padding:7px 9px;font-size:12px}.btn.ghost{background:transparent}.iconbtn{width:42px;height:42px;border:1px solid var(--line);border-radius:12px;background:#fff}.pill{display:inline-flex;align-items:center;gap:5px;border-radius:999px;padding:5px 9px;background:#f1f5f9;color:#475569;font-size:11px;font-weight:800}.pill.blue{background:var(--blue2);color:#1d4ed8}.pill.green{background:var(--green2);color:#166534}.pill.orange{background:var(--orange2);color:#9a3412}.pill.purple{background:var(--purple2);color:#5b21b6}.pill.red{background:var(--red2);color:#991b1b}.bottom{position:fixed;left:0;right:0;bottom:0;z-index:30;display:grid;grid-template-columns:repeat(5,1fr);gap:5px;padding:8px max(10px,env(safe-area-inset-left)) max(8px,env(safe-area-inset-bottom));background:#fff;border-top:1px solid var(--line)}.nav{background:#fff;border:0;color:#64748b;border-radius:11px;padding:8px 4px;font-size:11px;font-weight:800}.nav.active{background:#dbeafe;color:#0f172a}.input{width:100%;border:1px solid #cbd5e1;border-radius:10px;padding:9px 10px;background:#fff;color:var(--text)}.input:focus{outline:2px solid #bfdbfe;border-color:#60a5fa}.label{font-size:11px;color:#64748b;font-weight:750}.section-title{font-size:14px;font-weight:850;margin:18px 0 8px}.status{padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:#f8fafc;font-size:12px}.status.ok{background:var(--green2);border-color:#bbf7d0;color:#166534}.status.warn{background:#fffbeb;border-color:#fde68a;color:#92400e}.status.err{background:var(--red2);border-color:#fecaca;color:#991b1b}
@@ -110,7 +111,32 @@ async function auth(path,body){if(!cloudConfig)throw new Error('Cloud sync is no
 async function cloudGetLibraryRow(){if(!cloudConfig||!currentUser)return null;const rows=await api(`workout_programs?select=program,updated_at&user_id=eq.${encodeURIComponent(currentUser.id)}&limit=1`);return rows?.[0]||null}
 async function cloudForceSaveLibrary(){if(!cloudConfig||!currentUser)return false;const ts=new Date().toISOString();const rows=await api('workout_programs?on_conflict=user_id',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=representation'},body:JSON.stringify({user_id:currentUser.id,program:state.library,updated_at:ts})});const savedTs=Array.isArray(rows)&&rows[0]?.updated_at?rows[0].updated_at:ts;await saveLibraryLocal(savedTs);await setProgramMeta({baseTs:savedTs,cloudTs:savedTs,dirty:false});return true}
 async function cloudSaveLibrary({force=false}={}){if(!cloudConfig||!currentUser)return {status:'local'};const remote=await cloudGetLibraryRow();const remoteTs=remote?.updated_at||'';const expected=programMeta.baseTs||programMeta.cloudTs||'';if(!force&&remote&&expected&&remoteTs&&remoteTs!==expected){return {status:'conflict',remote,remoteTs}}if(!force&&remote&&!expected){return {status:'conflict',remote,remoteTs}}const ts=new Date().toISOString();if(remote){const qs=`workout_programs?user_id=eq.${encodeURIComponent(currentUser.id)}&updated_at=eq.${encodeURIComponent(expected||remoteTs)}`;const rows=await api(qs,{method:'PATCH',headers:{Prefer:'return=representation'},body:JSON.stringify({program:state.library,updated_at:ts})});if(!Array.isArray(rows)||rows.length===0){const latest=await cloudGetLibraryRow();return {status:'conflict',remote:latest,remoteTs:latest?.updated_at||''}}const savedTs=rows[0]?.updated_at||ts;await saveLibraryLocal(savedTs);await setProgramMeta({baseTs:savedTs,cloudTs:savedTs,dirty:false});return {status:'saved',ts:savedTs}}else{const rows=await api('workout_programs',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify({user_id:currentUser.id,program:state.library,updated_at:ts})});const savedTs=Array.isArray(rows)&&rows[0]?.updated_at?rows[0].updated_at:ts;await saveLibraryLocal(savedTs);await setProgramMeta({baseTs:savedTs,cloudTs:savedTs,dirty:false});return {status:'saved',ts:savedTs}}}
-async function cloudLoadLibrary(){if(!cloudConfig||!currentUser)return {status:'no-cloud'};const remote=await cloudGetLibraryRow();const local=await idbGet('program',localKey('library'));const localMeta=await getProgramMeta();programMeta=localMeta;const remoteTs=remote?.updated_at||'';if(remote?.program){if(localMeta.dirty){if(localMeta.baseTs&&remoteTs===localMeta.baseTs){const r=await cloudSaveLibrary();if(r.status==='saved')return r;return r}return {status:'conflict',remote,remoteTs}}state.library=normalizeProgramLibrary(remote.program);await saveLibraryLocal(remoteTs);await setProgramMeta({baseTs:remoteTs,cloudTs:remoteTs,dirty:false});return {status:'loaded',ts:remoteTs}}if(local?.library){state.library=normalizeProgramLibrary(local.library);if(localMeta.dirty){const r=await cloudForceSaveLibrary();return r}const r=await cloudForceSaveLibrary();return r}state.library=normalizeProgramLibrary(null);return await cloudForceSaveLibrary()}
+async function cloudLoadLibrary(){
+  if(!cloudConfig||!currentUser)return {status:'no-cloud'};
+  const remote=await cloudGetLibraryRow();
+  const local=await idbGet('program',localKey('library'));
+  const localMeta=await getProgramMeta();
+  programMeta=localMeta;
+  const remoteTs=remote?.updated_at||'';
+  if(remote?.program){
+    if(localMeta.dirty){
+      if(localMeta.baseTs&&remoteTs===localMeta.baseTs){
+        return await cloudSaveLibrary();
+      }
+      return {status:'conflict',remote,remoteTs};
+    }
+    state.library=normalizeProgramLibrary(remote.program);
+    await saveLibraryLocal(remoteTs);
+    await setProgramMeta({baseTs:remoteTs,cloudTs:remoteTs,dirty:false});
+    return {status:'loaded',ts:remoteTs};
+  }
+  if(local?.library){
+    state.library=normalizeProgramLibrary(local.library);
+    return {status:'needs-initialize'};
+  }
+  state.library=normalizeProgramLibrary(null);
+  return {status:'empty-cloud'};
+}
 async function openProgramConflict(remote,remoteTs){const localCopy=clone(state.library);showModal(`<div class="row between"><div><div class="h2">Program changed on another device</div><div class="muted">The cloud version is newer. Choose which version should win.</div></div><button class="iconbtn" data-close>✕</button></div><div class="card" style="margin-top:10px"><b>Cloud version</b><div class="tiny muted">Updated ${remoteTs?new Date(remoteTs).toLocaleString():'recently'}</div></div><div class="row" style="margin-top:14px;justify-content:flex-end"><button class="btn" id="useCloudVersion">Use Cloud Version</button><button class="btn blue" id="keepLocalVersion">Keep My Changes</button></div>`);el('useCloudVersion').onclick=async()=>{state.library=normalizeProgramLibrary(remote.program);await saveLibraryLocal(remoteTs);await setProgramMeta({baseTs:remoteTs,cloudTs:remoteTs,dirty:false});closeModal();await renderAll();notify('Cloud version loaded.','ok')};el('keepLocalVersion').onclick=async()=>{state.library=localCopy;const r=await cloudSaveLibrary({force:true});if(r.status==='saved'){closeModal();await renderAll();notify('Your version replaced the cloud version.','ok')}else notify('Could not save your version.','warn')}}
 async function getSessions(){if(storageFallback||!db)return lsGet(localKey('sessions'),[]).filter(x=>x.ownerId===ownerKey());return new Promise(resolve=>{const q=db.transaction('sessions','readonly').objectStore('sessions').getAll();q.onsuccess=()=>resolve((q.result||[]).filter(x=>x.ownerId===ownerKey()).sort((a,b)=>new Date(a.date)-new Date(b.date)));q.onerror=()=>resolve([])})}
 async function saveSession(s){const v={...s,ownerId:ownerKey(),updatedAt:new Date().toISOString()};if(storageFallback||!db){const rows=await getSessions();const i=rows.findIndex(x=>x.id===v.id);if(i>=0)rows[i]=v;else rows.push(v);lsSet(localKey('sessions'),rows)}else await new Promise(resolve=>{const q=db.transaction('sessions','readwrite').objectStore('sessions').put(v);q.onsuccess=q.onerror=()=>resolve()});if(cloudReady&&currentUser){await api('workout_sessions?on_conflict=id',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({id:v.id,user_id:currentUser.id,session_date:v.date,routine:v.routine,routine_id:v.routineId,program_id:v.programId,payload:v,updated_at:v.updatedAt})})}}
@@ -185,6 +211,36 @@ function nav(v){document.querySelectorAll('.view').forEach(x=>x.classList.toggle
 async function renderAll(){renderWorkout();await renderDashboard();renderHistory();renderProgram();renderExercises()}
 document.querySelectorAll('.nav').forEach(b=>b.onclick=()=>nav(b.dataset.view));el('settingsBtn').onclick=openSettings;el('modal').addEventListener('click',e=>{if(e.target===el('modal'))closeModal()});
 async function migrateLegacy(){const legacy=await idbGet('program','current');if(legacy?.program&&!await idbGet('program',localKey('library'))){state.library=normalizeProgramLibrary(legacy.program);await saveLibraryLocal(legacy.updatedAt||new Date().toISOString())}}
-(async()=>{try{await openDB();await migrateLegacy();await loadLibraryLocal();state.routineId=lsGet(localKey('routineId'),activeRoutines()[0]?.id||null);if(!activeRoutines().some(r=>r.id===state.routineId))state.routineId=activeRoutines()[0]?.id||null;await renderAll();el('bootError').style.display='none'}catch(e){console.error('boot',e);el('bootError').textContent='Workout Tracker could not start: '+e.message;el('bootError').style.display='block'}try{cloudConfig=await getCloudConfig();if(!cloudConfig){try{const rr=await fetch('config.js',{cache:'no-store'});if(rr.ok){const txt=await rr.text();const mm=txt.match(/supabaseUrl\s*:\s*['\"]([^'\"]+)['\"][\s\S]*?supabaseKey\s*:\s*['\"]([^'\"]+)['\"]/);if(mm)await saveCloudConfig({supabaseUrl:mm[1],supabaseKey:mm[2]});}}catch(e){}}cloudReady=!!cloudConfig;if(cloudReady){cloudSession=await getCloudSession();if(cloudSession){const ok=await refreshSession();if(ok){currentUser=cloudSession.user||currentUser;const r=await cloudLoadLibrary();if(r.status==='conflict'&&r.remote)await openProgramConflict(r.remote,r.remoteTs);await loadCloudSessions();await renderAll()}}}updateSettingsButton()}catch(e){console.warn('cloud boot',e);cloudReady=false;updateSettingsButton()}})();
+(async()=>{
+  try{
+    await openDB();
+    await migrateLegacy();
+    cloudConfig=await getCloudConfig();
+    cloudReady=!!cloudConfig;
+    const savedSession=await getCloudSession();
+    if(cloudReady&&savedSession){
+      cloudSession=savedSession;
+      const ok=await refreshSession();
+      if(ok){
+        currentUser=cloudSession.user||currentUser;
+        const r=await cloudLoadLibrary();
+        if(r.status==='conflict'&&r.remote)await openProgramConflict(r.remote,r.remoteTs);
+        else if(r.status==='needs-initialize') notify('Cloud account has no saved program yet. Use Save Program to initialize it.','warn');
+        await loadCloudSessions();
+      }
+    }
+    if(!currentUser) await loadLibraryLocal();
+    state.routineId=lsGet(localKey('routineId'),activeRoutines()[0]?.id||null);
+    if(!activeRoutines().some(r=>r.id===state.routineId))state.routineId=activeRoutines()[0]?.id||null;
+    await renderAll();
+    el('bootError').style.display='none';
+    updateSettingsButton();
+  }catch(e){
+    console.error('boot',e);
+    try{if(!currentUser){await loadLibraryLocal();await renderAll();}}catch(_){}
+    el('bootError').textContent='Workout Tracker could not start: '+e.message;
+    el('bootError').style.display='block';
+  }
+})();;
 </script>
 </body></html>
