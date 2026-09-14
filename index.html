@@ -82,7 +82,7 @@ function normalizeProgramLibrary(raw){
 }
 let db=null,storageFallback=false,cloudConfig=null,cloudReady=false,currentUser=null,cloudSession=null,cloudSyncing=false;
 let programMeta={baseTs:'',cloudTs:'',dirty:false};
-const state={library:null,routineId:null,draft:{},currentSessionStart:null}
+const state={library:null,routineId:null,draft:{},currentSessionStart:null}; let appReady=false
 function activeProgram(){return state.library?.programs.find(p=>p.id===state.library.activeProgramId)||state.library?.programs[0]}
 function activeRoutines(){return activeProgram()?.routines||[]}
 function currentRoutine(){return activeRoutines().find(r=>r.id===state.routineId)||activeRoutines()[0]}
@@ -138,6 +138,7 @@ async function boot(){
     state.routineId=lsGet(localKey('routineId'),activeRoutines()[0]?.id);
     if(!activeRoutines().some(r=>r.id===state.routineId))state.routineId=activeRoutines()[0]?.id;
     await renderAll();
+    appReady=true;
     el('bootError').style.display='none';
     updateSettingsButton();
   }catch(e){
@@ -148,6 +149,7 @@ async function boot(){
       state.routineId=lsGet(localKey('routineId'),activeRoutines()[0]?.id);
       if(!activeRoutines().some(r=>r.id===state.routineId))state.routineId=activeRoutines()[0]?.id;
       await renderAll();
+      appReady=true;
     }catch(_){ }
     el('bootError').textContent='Workout Tracker could not start: '+e.message;
     el('bootError').style.display='block';
@@ -218,10 +220,10 @@ function openAuth(){let mode='signin';showModal(`<div class="row between"><div><
 async function signInWithData(d){currentUser=d.user||null;cloudSession={...d,expires_at:Date.now()+Number(d.expires_in||3600)*1000};await saveCloudSession(cloudSession);await loadLibraryLocal();const r=await cloudLoadLibrary();if(r.status==='conflict'&&r.remote)await openProgramConflict(r.remote,r.remoteTs);await loadCloudSessions();state.routineId=activeRoutines()[0]?.id||null;updateSettingsButton();await renderAll();if(r.status==='conflict')notify('Signed in, but your local program conflicts with a newer cloud version.','warn');else notify('Signed in and synced.','ok')}
 async function signOut(){await saveCloudSession(null);currentUser=null;cloudSession=null;state.library=normalizeProgramLibrary(null);state.routineId=activeRoutines()[0]?.id;state.draft={};await loadLibraryLocal();updateSettingsButton();closeModal();await renderAll();notify('Signed out. Local data is isolated from the next account.','ok')}
 function updateSettingsButton(){const b=el('settingsBtn');b.textContent=currentUser?'☁️':'⚙️';b.title=currentUser?`Signed in as ${currentUser.email}`:(cloudReady?'Cloud Sync configured':'Cloud Sync not configured')}
-function nav(v){document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id===`view-${v}`));document.querySelectorAll('.nav').forEach(x=>x.classList.toggle('active',x.dataset.view===v));if(v==='workout')renderWorkout();if(v==='dashboard')renderDashboard();if(v==='history')renderHistory();if(v==='program')renderProgram();if(v==='exercises')renderExercises()}
+function nav(v){if(!appReady)return;document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id===`view-${v}`));document.querySelectorAll('.nav').forEach(x=>x.classList.toggle('active',x.dataset.view===v));if(v==='workout')renderWorkout();if(v==='dashboard')renderDashboard();if(v==='history')renderHistory();if(v==='program')renderProgram();if(v==='exercises')renderExercises()}
 async function renderAll(){renderWorkout();await renderDashboard();renderHistory();renderProgram();renderExercises()}
-document.querySelectorAll('.nav').forEach(b=>b.onclick=()=>nav(b.dataset.view));el('settingsBtn').onclick=openSettings;el('modal').addEventListener('click',e=>{if(e.target===el('modal'))closeModal()});
+document.querySelectorAll('.nav').forEach(b=>b.onclick=()=>nav(b.dataset.view));el('settingsBtn').onclick=()=>{if(appReady)openSettings();};el('modal').addEventListener('click',e=>{if(e.target===el('modal'))closeModal()});
 async function migrateLegacy(){const legacy=await idbGet('program','current');if(legacy?.program&&!await idbGet('program',localKey('library'))){state.library=normalizeProgramLibrary(legacy.program);await saveLibraryLocal(legacy.updatedAt||new Date().toISOString())}}
-(async()=>{try{await openDB();await migrateLegacy();await loadLibraryLocal();state.routineId=lsGet(localKey('routineId'),activeRoutines()[0]?.id||null);if(!activeRoutines().some(r=>r.id===state.routineId))state.routineId=activeRoutines()[0]?.id||null;await renderAll();el('bootError').style.display='none'}catch(e){console.error('boot',e);el('bootError').textContent='Workout Tracker could not start: '+e.message;el('bootError').style.display='block'}try{cloudConfig=await getCloudConfig();if(!cloudConfig){try{const rr=await fetch('config.js',{cache:'no-store'});if(rr.ok){const txt=await rr.text();const mm=txt.match(/supabaseUrl\s*:\s*['\"]([^'\"]+)['\"][\s\S]*?supabaseKey\s*:\s*['\"]([^'\"]+)['\"]/);if(mm)await saveCloudConfig({supabaseUrl:mm[1],supabaseKey:mm[2]});}}catch(e){}}cloudReady=!!cloudConfig;if(cloudReady){cloudSession=await getCloudSession();if(cloudSession){const ok=await refreshSession();if(ok){currentUser=cloudSession.user||currentUser;const r=await cloudLoadLibrary();if(r.status==='conflict'&&r.remote)await openProgramConflict(r.remote,r.remoteTs);await loadCloudSessions();await renderAll()}}}updateSettingsButton()}catch(e){console.warn('cloud boot',e);cloudReady=false;updateSettingsButton()}})();
+boot();
 </script>
 </body></html>
