@@ -116,7 +116,44 @@ async function getSessions(){if(storageFallback||!db)return lsGet(localKey('sess
 async function saveSession(s){const v={...s,ownerId:ownerKey(),updatedAt:new Date().toISOString()};if(storageFallback||!db){const rows=await getSessions();const i=rows.findIndex(x=>x.id===v.id);if(i>=0)rows[i]=v;else rows.push(v);lsSet(localKey('sessions'),rows)}else await new Promise(resolve=>{const q=db.transaction('sessions','readwrite').objectStore('sessions').put(v);q.onsuccess=q.onerror=()=>resolve()});if(cloudReady&&currentUser){await api('workout_sessions?on_conflict=id',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({id:v.id,user_id:currentUser.id,session_date:v.date,routine:v.routine,routine_id:v.routineId,program_id:v.programId,payload:v,updated_at:v.updatedAt})})}}
 async function loadCloudSessions(){if(!cloudConfig||!currentUser)return;const rows=await api(`workout_sessions?select=id,session_date,routine,routine_id,program_id,payload,updated_at&user_id=eq.${encodeURIComponent(currentUser.id)}&order=session_date.asc`);for(const x of rows||[]){if(x.payload)await saveSession({...x.payload,id:x.id})}}
 function notify(msg,type='ok'){const t=el('toast');t.textContent=msg;t.className=`toast show ${type}`;clearTimeout(window._toast);window._toast=setTimeout(()=>t.className='toast',3200)}
-async function boot(){try{await openDB();await loadLibraryLocal();state.routineId=lsGet(localKey('routineId'),activeRoutines()[0]?.id);if(!activeRoutines().some(r=>r.id===state.routineId))state.routineId=activeRoutines()[0]?.id;await renderAll();}catch(e){console.error(e);el('bootError').textContent='Workout Tracker could not start: '+e.message;el('bootError').style.display='block'}try{cloudConfig=await getCloudConfig();if(cloudConfig){cloudReady=true;cloudSession=await getCloudSession();if(cloudSession){await refreshSession();currentUser=cloudSession?.user||currentUser;await cloudLoadLibrary();await loadCloudSessions();await renderAll()} }updateSettingsButton()}catch(e){console.warn('Cloud initialization failed',e);cloudReady=false;updateSettingsButton()}}
+async function boot(){
+  try{
+    await openDB();
+    await loadLibraryLocal();
+    cloudConfig=await getCloudConfig();
+    if(cloudConfig){
+      cloudReady=true;
+      cloudSession=await getCloudSession();
+      if(cloudSession){
+        await refreshSession();
+        currentUser=cloudSession?.user||currentUser;
+      }
+    }
+    if(currentUser){
+      // Authenticated startup: cloud is authoritative. Do not render cached/local program first.
+      const r=await cloudLoadLibrary();
+      await loadCloudSessions();
+      if(r.status==='conflict'&&r.remote){ await openProgramConflict(r.remote,r.remoteTs); }
+    }
+    state.routineId=lsGet(localKey('routineId'),activeRoutines()[0]?.id);
+    if(!activeRoutines().some(r=>r.id===state.routineId))state.routineId=activeRoutines()[0]?.id;
+    await renderAll();
+    el('bootError').style.display='none';
+    updateSettingsButton();
+  }catch(e){
+    console.error('boot',e);
+    // If cloud initialization fails, fall back to the already-loaded local cache.
+    try{
+      if(!state.library) await loadLibraryLocal();
+      state.routineId=lsGet(localKey('routineId'),activeRoutines()[0]?.id);
+      if(!activeRoutines().some(r=>r.id===state.routineId))state.routineId=activeRoutines()[0]?.id;
+      await renderAll();
+    }catch(_){ }
+    el('bootError').textContent='Workout Tracker could not start: '+e.message;
+    el('bootError').style.display='block';
+    updateSettingsButton();
+  }
+}
 
 function getDraft(exId){state.draft[state.routineId]=state.draft[state.routineId]||{};state.draft[state.routineId][exId]=state.draft[state.routineId][exId]||{sets:[]};return state.draft[state.routineId][exId]}
 function setDraftValue(exId,i,field,value){const d=getDraft(exId);d.sets=d.sets||[];d.sets[i]=d.sets[i]||{};d.sets[i][field]=value}
